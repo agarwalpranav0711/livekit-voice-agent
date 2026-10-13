@@ -3,6 +3,11 @@
 .env.*
 !.env.example
 .envrc
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Python
 .venv/
@@ -12,7 +17,12 @@ __pycache__/
 *.pyd
 *.egg-info/
 dist/
+dist-server/
 build/
+models/
+hf_cache/
+.cache/huggingface/
+*.onnx
 
 # Test, type-checker, and linter caches
 .pytest_cache/
@@ -20,6 +30,16 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# JavaScript / TypeScript
+node_modules/
+dist-ssr/
+.vite/
+coverage/
+*.tsbuildinfo
+playwright-report/
+test-results/
+.tsupgrader/
 
 # Logs and local editor/OS files
 *.log

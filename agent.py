@@ -19,7 +19,6 @@ from livekit.agents import (
     metrics,
 )
 from livekit.plugins import noise_cancellation, silero
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 load_dotenv()
 
@@ -91,8 +90,7 @@ async def entrypoint(ctx: JobContext):
         llm=llm_fallback,
         tts=tts_fallback,
         vad=vad,
-        turn_detection=MultilingualModel(),
-        preemptive_generation=True,
+        turn_handling={"turn_detection": inference.TurnDetector()},
     )
 
     # Collect usage metrics
