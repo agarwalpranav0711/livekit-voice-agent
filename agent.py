@@ -19,6 +19,7 @@ from livekit.agents import (
     metrics,
 )
 from livekit.plugins import noise_cancellation, silero
+from assistant_settings import build_instructions, parse_room_settings
 
 load_dotenv()
 
@@ -27,17 +28,8 @@ logger = logging.getLogger(__name__)
 
 # Assistant personality
 class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(
-            instructions=(
-                "You are a friendly, upbeat AI assistant for technology "
-                "and programming. Help users solve problems step by step. "
-                "Speak naturally, use simple language, and keep replies "
-                "to three sentences or fewer whenever possible. "
-                "Be encouraging without exaggeration. "
-                "If you are unsure, say so honestly instead of guessing."
-            ),
-        )
+    def __init__(self, instructions: str) -> None:
+        super().__init__(instructions=instructions)
 
 
 # LiveKit agent server
@@ -47,6 +39,7 @@ server = AgentServer()
 # Main voice agent entry point
 @server.rtc_session()
 async def entrypoint(ctx: JobContext):
+    settings = parse_room_settings(ctx.room.metadata)
 
     # Load VAD once
     vad = silero.VAD.load()
@@ -129,7 +122,7 @@ async def entrypoint(ctx: JobContext):
 
     # Start session with noise cancellation
     await session.start(
-        agent=Assistant(),
+        agent=Assistant(build_instructions(settings)),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -137,6 +130,7 @@ async def entrypoint(ctx: JobContext):
             ),
         ),
     )
+    session.say(settings.greeting)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ included in the Vite client bundle.
 
 ## Before you start
 
-- Node.js 22.22 or newer and npm.
+- Node.js 22.22 or newer and npm. Local SQLite uses Node's built-in
+  `node:sqlite`; Node 22 may display its experimental-feature warning.
 - Python agent configured with the same LiveKit Cloud project as the API.
 - The project's root `.env` file containing `LIVEKIT_URL`, `LIVEKIT_API_KEY`,
   and `LIVEKIT_API_SECRET`. The API reads this ignored file from the parent
@@ -17,12 +18,10 @@ included in the Vite client bundle.
 
 The agent in `agent.py` uses `@server.rtc_session()` without an `agent_name`.
 LiveKit documents this as automatic dispatch: an unnamed agent is dispatched
-when a new room is created. The API generates a different random room name for
-each call, and the first browser participant creates that room. This is why the
-agent worker must already be registered in the same LiveKit project. The API
-does not add a named-agent dispatch to the token; doing so would not target the
-currently unnamed worker. LiveKit recommends named, explicit dispatch for
-production systems, but switching requires changing and redeploying the worker.
+when a participant joins a new room. The API creates a random room first and
+places the validated assistant settings snapshot in its room metadata; the
+browser then joins it. The Python worker must already be running in the same
+LiveKit project. The API does not add a named-agent dispatch to the token.
 
 ## Local configuration
 
@@ -39,10 +38,10 @@ least 24 characters long. To generate one locally:
 node -p "require('node:crypto').randomBytes(32).toString('base64url')"
 ```
 
-Paste the generated value into that local `.env` file. Keep it private. The API
-checks this access code, rate-limits token requests, validates the website
-origin, and only grants access to one server-generated room. The access code is
-not persisted in browser storage.
+Paste the generated value into that local `.env` file. Keep it private. The API checks this access code, rate-limits token requests, validates the
+website origin, and only grants access to one server-generated room. The code
+is not persisted in browser storage. Settings and history use the same code to
+unlock a signed, HttpOnly, same-site owner session.
 
 `WEB_ORIGIN` must match the exact address used in the browser. The default is
 `http://localhost:5173`; use that exact hostname rather than `127.0.0.1`.
@@ -79,24 +78,42 @@ Set-Location .\voice-agent-web
 npm run dev
 ```
 
-Open `http://localhost:5173`, enter the access code from the API `.env`, and
-choose **Start talking**. The browser will ask for microphone permission. The
-website reports when it has joined LiveKit and whether the Python agent joins
-the new room; if it does not arrive within 20 seconds, check the agent worker
-and its LiveKit project configuration. Use **Mute** or **End conversation** to
-control the live session.
+Open `http://localhost:5173`. Use **Settings** to personalize the assistant
+and **History** to review saved conversations; both ask for the access code
+when needed. Then enter that code in the voice page and choose **Start
+talking**. The browser will ask for microphone permission. The website reports
+whether the Python agent joins the new room; if it does not arrive within 20
+seconds, check the worker and its LiveKit project configuration. Use **Mute**
+or **End conversation** to control the live session.
 
-The transcript appears only if the connected agent publishes LiveKit
-transcription events. The existing agent may provide audio without publishing
-transcripts.
+Settings persist locally in `voice-agent-web/data/aural.sqlite`. Each new room
+receives the saved settings in its initial LiveKit room metadata; `agent.py`
+reads that snapshot to build the actual agent instructions and speak the
+configured greeting. Changes apply to the next session, not an ongoing one.
+
+Only final LiveKit `TranscriptionReceived` events are saved. If the agent does
+not publish transcript events, history retains session metadata and displays
+an empty-transcript state; no transcript is invented. Raw microphone audio is
+not saved. Explicitly ended sessions are marked completed; a browser closed
+abruptly may leave the record incomplete. Data is local to this laptop and
+scoped to the signed owner session cookie. The UI can delete individual
+records or clear all of them; the access code itself is never stored.
 
 ## Server API
 
-The API listens on `127.0.0.1:3001` by default:
+The API listens on `127.0.0.1:3001` by default. The Vite development server
+listens on the laptop's network interfaces and proxies `/api` requests to the
+API on that same laptop:
 
 - `GET /api/health` reports API process health without returning configuration.
+- `POST /api/session` validates the access code and creates a private
+  owner-scoped browser session.
+- `GET/PUT /api/settings` load and validate locally stored assistant settings.
+- `/api/history` endpoints list, read, and delete only the current owner's
+  conversations and actual transcript events.
 - `POST /api/token` requires the exact allowed `Origin` and JSON
-  `{ "accessCode": "..." }`.
+  `{ "accessCode": "..." }`. The API creates a new room with the settings
+  snapshot in metadata before returning its room-scoped token.
 
 Tokens expire after 10 minutes, are not cacheable, and are limited to a random
 room and guest identity. They grant room join, subscribe, and microphone
@@ -118,17 +135,15 @@ These checks do not connect to LiveKit, open a microphone, or prove a spoken
 conversation. Those require a running worker, valid Cloud credentials, a
 supported browser, and microphone permission.
 
-## Production notes
+## Phone testing on your local network
 
-This is a local-development integration, not a production authentication
-system. The shared access code is suitable for a private prototype only. A
-public deployment needs real user authentication, HTTPS, an exact production
-`WEB_ORIGIN`, secret injection from a hosting provider, and a shared,
-distributed rate limiter. Put the static Vite build and API behind the same
-HTTPS origin (or configure a specific HTTPS origin and reverse proxy `/api`).
-If the API is behind exactly one trusted reverse proxy, set
-`TRUST_PROXY_HOPS=1`; do not expose the API directly to untrusted clients when
-trust proxy is enabled, or IP-based rate limits could be bypassed.
+See the repository's
+[`LOCAL_DEVELOPMENT.md`](../LOCAL_DEVELOPMENT.md) for the laptop and phone
+commands, the browser HTTPS/microphone limitation, and temporary tunnel
+precautions. A same-Wi-Fi `http://<laptop-ip>:5173` URL can load the site, but
+is not a secure context for microphone access on a phone. A temporary HTTPS
+tunnel exposes the development site through a public URL while it is running;
+get approval before installing or downloading a tunnel tool.
 
-Live audio uses your LiveKit project and configured inference providers; their
-usage may incur charges.
+This remains a private learning project. Keep the access code and LiveKit
+credentials private. LiveKit audio/inference usage may incur charges.

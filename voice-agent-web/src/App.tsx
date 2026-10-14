@@ -1,16 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
 import type { Participant, Room as LiveKitRoom, TranscriptionSegment } from 'livekit-client'
+import { defaultSettings } from './assistantDefaults'
+import { HistoryView, SettingsForm } from './PrivateViews'
+import type { AssistantSettings, ConversationDetail, ConversationSummary } from './PrivateViews'
 import './App.css'
 
 type ConnectionState = 'idle' | 'authorizing' | 'connecting' | 'connected' | 'error'
 type TranscriptLine = { id: string; speaker: string; text: string; final: boolean }
+type Page = 'voice' | 'settings' | 'history'
 type TokenResponse = {
   serverUrl: string
   token: string
   roomName: string
   identity: string
   expiresInSeconds: number
+}
+
+async function responseError(response: Response, fallback: string) {
+  const payload = await response.json().catch(() => null) as { error?: string } | null
+  return payload?.error ?? fallback
 }
 
 function Icon({
@@ -49,6 +58,17 @@ function Icon({
 
 function App() {
   const [accessCode, setAccessCode] = useState('')
+  const [page, setPage] = useState<Page>('voice')
+  const [lockedPage, setLockedPage] = useState<Page | null>(null)
+  const [settings, setSettings] = useState<AssistantSettings>(defaultSettings)
+  const [settingsLoading, setSettingsLoading] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsMessage, setSettingsMessage] = useState('')
+  const [settingsError, setSettingsError] = useState('')
+  const [history, setHistory] = useState<ConversationSummary[]>([])
+  const [selectedConversation, setSelectedConversation] = useState<ConversationDetail | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
   const [state, setState] = useState<ConnectionState>('idle')
   const [error, setError] = useState('')
   const [muted, setMuted] = useState(false)
@@ -59,10 +79,151 @@ function App() {
   const [activeSpeaker, setActiveSpeaker] = useState<'assistant' | 'you' | 'none'>('none')
   const [transcript, setTranscript] = useState<TranscriptLine[]>([])
   const [roomName, setRoomName] = useState('')
+  const [transcriptSaveError, setTranscriptSaveError] = useState('')
   const [reducedMotion, setReducedMotion] = useState(false)
   const roomRef = useRef<LiveKitRoom | null>(null)
   const audioRootRef = useRef<HTMLDivElement>(null)
   const agentTimeoutRef = useRef<number | undefined>(undefined)
+  const pageRequestRef = useRef(0)
+
+  const loadSettings = async () => {
+    setSettingsLoading(true)
+    setSettingsError('')
+    setSettingsMessage('')
+    try {
+      const response = await fetch('/api/settings')
+      if (response.status === 401) {
+        setLockedPage('settings')
+        return
+      }
+      if (!response.ok) throw new Error(await responseError(response, 'Could not load settings.'))
+      const payload = await response.json() as { settings: AssistantSettings }
+      setSettings(payload.settings)
+    } catch (loadError) {
+      setSettingsError(loadError instanceof Error ? loadError.message : 'Could not load settings.')
+    } finally {
+      setSettingsLoading(false)
+    }
+  }
+
+  const loadHistory = async () => {
+    const requestId = ++pageRequestRef.current
+    setHistoryLoading(true)
+    setHistoryError('')
+    try {
+      const response = await fetch('/api/history')
+      if (response.status === 401) {
+        setLockedPage('history')
+        return
+      }
+      if (!response.ok) throw new Error(await responseError(response, 'Could not load conversation history.'))
+      const payload = await response.json() as { conversations: ConversationSummary[] }
+      if (requestId === pageRequestRef.current) {
+        setHistory(payload.conversations)
+        setSelectedConversation(null)
+      }
+    } catch (loadError) {
+      setHistoryError(loadError instanceof Error ? loadError.message : 'Could not load conversation history.')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const openPrivatePage = async (destination: 'settings' | 'history') => {
+    setPage(destination)
+    setLockedPage(null)
+    if (destination === 'settings') await loadSettings()
+    else await loadHistory()
+  }
+
+  const unlockPrivatePage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const destination = lockedPage
+    if (!destination) return
+    setError('')
+    try {
+      const response = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessCode }),
+      })
+      if (!response.ok) throw new Error(await responseError(response, 'Could not unlock private settings and history.'))
+      setAccessCode('')
+      setLockedPage(null)
+      if (destination === 'settings') await loadSettings()
+      else await loadHistory()
+    } catch (unlockError) {
+      setError(unlockError instanceof Error ? unlockError.message : 'Could not unlock private settings and history.')
+    }
+  }
+
+  const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSettingsSaving(true)
+    setSettingsError('')
+    setSettingsMessage('')
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      })
+      if (response.status === 401) {
+        setLockedPage('settings')
+        return
+      }
+      if (!response.ok) throw new Error(await responseError(response, 'Could not save settings.'))
+      const payload = await response.json() as { settings: AssistantSettings }
+      setSettings(payload.settings)
+      setSettingsMessage('Saved. These preferences will be used for your next conversation.')
+    } catch (saveError) {
+      setSettingsError(saveError instanceof Error ? saveError.message : 'Could not save settings.')
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
+
+  const openConversation = async (conversationId: string) => {
+    setHistoryError('')
+    setSelectedConversation(null)
+    try {
+      const response = await fetch(`/api/history/${encodeURIComponent(conversationId)}`)
+      if (response.status === 401) {
+        setLockedPage('history')
+        return
+      }
+      if (!response.ok) throw new Error(await responseError(response, 'Could not open that conversation.'))
+      const payload = await response.json() as { conversation: ConversationDetail }
+      setSelectedConversation(payload.conversation)
+    } catch (loadError) {
+      setHistoryError(loadError instanceof Error ? loadError.message : 'Could not open that conversation.')
+    }
+  }
+
+  const deleteConversation = async (conversationId: string) => {
+    if (!window.confirm('Delete this conversation and its saved transcript? This cannot be undone.')) return
+    try {
+      const response = await fetch(`/api/history/${encodeURIComponent(conversationId)}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error(await responseError(response, 'Could not delete conversation.'))
+      setSelectedConversation(null)
+      await loadHistory()
+    } catch (deleteError) {
+      setHistoryError(deleteError instanceof Error ? deleteError.message : 'Could not delete conversation.')
+    }
+  }
+
+  const clearHistory = async () => {
+    if (!window.confirm('Clear all of your saved conversations and transcripts? This cannot be undone.')) return
+    try {
+      const response = await fetch('/api/history', { method: 'DELETE' })
+      if (!response.ok) throw new Error(await responseError(response, 'Could not clear history.'))
+      setSelectedConversation(null)
+      setHistory([])
+      setHistoryError('')
+    } catch (clearError) {
+      setHistoryError(clearError instanceof Error ? clearError.message : 'Could not clear history.')
+    }
+  }
 
   useEffect(() => {
     const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -110,10 +271,13 @@ function App() {
       }
 
       const credentials = await response.json() as TokenResponse
+      setAccessCode('')
+      setTranscriptSaveError('')
+      setRoomName(credentials.roomName)
+      setLockedPage(null)
       const { ParticipantKind, Room, RoomEvent, Track } = await import('livekit-client')
       const room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
-      setRoomName(credentials.roomName)
       setState('connecting')
 
       room.on(RoomEvent.ParticipantConnected, (participant) => {
@@ -167,6 +331,24 @@ function App() {
           }
           return updated.slice(-24)
         })
+        const finalSegments = segments
+          .filter((segment) => segment.final && segment.text.trim())
+          .map((segment) => ({
+            segmentId: segment.id,
+            speaker,
+            text: segment.text.trim(),
+          }))
+        if (finalSegments.length > 0) {
+          void fetch(`/api/history/${encodeURIComponent(credentials.roomName)}/transcript`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ segments: finalSegments }),
+          }).then(async (saveResponse) => {
+            if (!saveResponse.ok) throw new Error(await responseError(saveResponse, 'Could not save transcript entries.'))
+          }).catch((persistError: unknown) => {
+            setTranscriptSaveError(persistError instanceof Error ? persistError.message : 'Could not save transcript entries.')
+          })
+        }
       })
       room.on(RoomEvent.Disconnected, () => {
         if (roomRef.current === room) {
@@ -208,6 +390,14 @@ function App() {
     window.clearTimeout(agentTimeoutRef.current)
     const room = roomRef.current
     roomRef.current = null
+    if (roomName) {
+      try {
+        const response = await fetch(`/api/history/${encodeURIComponent(roomName)}/finish`, { method: 'POST' })
+        if (!response.ok) setTranscriptSaveError('The session ended, but its completion status could not be saved.')
+      } catch {
+        setTranscriptSaveError('The session ended, but its completion status could not be saved.')
+      }
+    }
     if (room) await room.disconnect()
     setState('idle')
     setMuted(false)
@@ -251,6 +441,11 @@ function App() {
           <span className="brand-mark"><Icon name="wave" size={19} /></span>
           <span>aural<span className="brand-period">.</span></span>
         </a>
+        <nav className="primary-nav" aria-label="Main navigation">
+          <button className={page === 'voice' ? 'nav-active' : ''} type="button" onClick={() => { setPage('voice'); setLockedPage(null) }}>Voice</button>
+          <button className={page === 'settings' ? 'nav-active' : ''} type="button" onClick={() => void openPrivatePage('settings')}>Settings</button>
+          <button className={page === 'history' ? 'nav-active' : ''} type="button" onClick={() => void openPrivatePage('history')}>History</button>
+        </nav>
         <div className="topbar-right">
           <span className="privacy-note"><Icon name="lock" size={14} /> Private session</span>
           <span className="topbar-divider" aria-hidden="true" />
@@ -259,11 +454,12 @@ function App() {
       </header>
 
       <section className="hero" aria-labelledby="page-title">
-        <div className="eyebrow"><span className="eyebrow-line" /> YOUR VOICE, YOUR ASSISTANT</div>
-        <h1 id="page-title">A little more human.<br /><span>A lot more helpful.</span></h1>
-        <p className="hero-copy">A real-time conversation with your AI assistant. No typing, no waiting — just talk.</p>
+        <div className="eyebrow"><span className="eyebrow-line" /> {page === 'voice' ? 'YOUR VOICE, YOUR ASSISTANT' : page === 'settings' ? 'PERSONALIZE YOUR ASSISTANT' : 'YOUR PRIVATE CONVERSATIONS'}</div>
+        <h1 id="page-title">{page === 'voice' ? <>A little more human.<br /><span>A lot more helpful.</span></> : page === 'settings' ? <>Make it sound<br /><span>like your assistant.</span></> : <>Your conversations.<br /><span>Saved on this device.</span></>}</h1>
+        <p className="hero-copy">{page === 'voice' ? 'A real-time conversation with your AI assistant. No typing, no waiting — just talk.' : page === 'settings' ? 'Choose how your assistant greets you and responds.' : 'Review actual transcript events from previous LiveKit sessions.'}</p>
       </section>
 
+      {page === 'voice' && (
       <section className="assistant-card" aria-label="Voice assistant controls">
         <div className="card-topline">
           <div className="assistant-identity">
@@ -394,10 +590,34 @@ function App() {
             </div>
           </section>
         )}
+        {transcriptSaveError && <p className="inline-alert" role="status">{transcriptSaveError}</p>}
 
         <div className="card-footnote"><Icon name="lock" size={13} /> Your audio is sent directly through LiveKit to your configured agent.</div>
         <div ref={audioRootRef} className="remote-audio" aria-hidden="true" />
       </section>
+      )}
+
+      {page !== 'voice' && lockedPage === page && (
+        <section className="private-card access-card" aria-labelledby="unlock-title">
+          <span className="private-eyebrow">PRIVATE AREA</span>
+          <h2 id="unlock-title">Enter your access code</h2>
+          <p className="private-intro">Your settings and conversation history are protected by the same private access code as your voice sessions.</p>
+          <form className="connect-form" onSubmit={unlockPrivatePage}>
+            <label className="access-code-label" htmlFor="private-access-code">Private access code</label>
+            <div className="input-wrap"><Icon name="lock" size={18} /><input id="private-access-code" type="password" autoComplete="current-password" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} minLength={24} maxLength={256} required /></div>
+            {error && <p className="private-error" role="alert">{error}</p>}
+            <button className="talk-button settings-save" type="submit" disabled={accessCode.length < 24}>Unlock private area</button>
+          </form>
+        </section>
+      )}
+
+      {page === 'settings' && lockedPage !== 'settings' && (
+        <SettingsForm settings={settings} onChange={setSettings} onSave={saveSettings} loading={settingsLoading} saving={settingsSaving} message={settingsMessage} error={settingsError} />
+      )}
+
+      {page === 'history' && lockedPage !== 'history' && (
+        <HistoryView conversations={history} selected={selectedConversation} onSelect={(id) => void openConversation(id)} onDelete={(id) => void deleteConversation(id)} onClear={() => void clearHistory()} loading={historyLoading} error={historyError} />
+      )}
 
       <section className="benefits" aria-label="About the voice assistant">
         <article className="benefit">

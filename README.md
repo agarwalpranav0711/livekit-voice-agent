@@ -88,17 +88,34 @@ The React/TypeScript browser client and its short-lived token API are in
 credentials in this project's ignored `.env`; the browser never receives the
 API key or secret.
 
-The existing Python worker uses an unnamed `@server.rtc_session()` entry point.
-LiveKit automatically dispatches an unnamed worker when a new room is created,
-so the web client creates a unique room per conversation and connects to it.
-The API intentionally does not request a named agent dispatch, which would not
-target this worker. Keep the worker running while testing the website.
+The website's Settings page persists assistant name, personality, greeting,
+language, response style, and custom instructions locally. When a voice session
+starts, the API creates a room with the validated settings snapshot in room
+metadata. The Python worker reads those settings to build the real agent
+instructions and speak the configured greeting. Changes apply to new sessions.
+Conversation metadata and final LiveKit transcript events are stored in local
+SQLite; raw microphone audio is not saved.
+
+The Python worker uses an unnamed `@server.rtc_session()` entry point. The
+website API creates a unique room for each conversation and the existing
+automatic dispatch flow targets that worker. Keep it running while testing.
+Conversation history and settings are scoped to the signed local browser
+session and stored under `voice-agent-web/data/aural.sqlite`.
 
 Follow the web README for private access-code setup and the commands to run the
 agent, token API, and website in separate terminals. Automated local checks do
 not prove a live conversation; that additionally requires valid LiveKit Cloud
 credentials, an active agent worker, a microphone-enabled browser, and
 successful audio from your configured providers.
+
+## Local development only
+
+The current project plan is local development only: no cloud hosting, phone
+calls, commits, or GitHub pushes. See
+[`LOCAL_DEVELOPMENT.md`](./LOCAL_DEVELOPMENT.md) for laptop setup, phone access
+options, and a learning roadmap. The earlier deployment preparation in
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) is deferred and is not part of the current
+plan.
 
 ## Configuration
 
